@@ -22,7 +22,7 @@ EPN_CUSTOM_ID = os.getenv("EPN_CUSTOM_ID", "giftgiver")
 if not EBAY_CLIENT_ID or not EBAY_CLIENT_SECRET:
     raise RuntimeError("Set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET in .env")
 
-app = FastAPI(title="GiftGiver API", version="1.1.0")
+app = FastAPI(title="GiftGiver API", version="1.1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +53,7 @@ class SuggestionResponse(BaseModel):
 _OAUTH_CACHE: Dict[str, Tuple[str, float]] = {}
 
 def get_ebay_oauth_token(scope: str = "https://api.ebay.com/oauth/api_scope") -> str:
+    """Get an app token for the Browse API. Only the base scope is required."""
     cache_key = "app_token"
     now = time.time()
     if cache_key in _OAUTH_CACHE:
@@ -61,14 +62,14 @@ def get_ebay_oauth_token(scope: str = "https://api.ebay.com/oauth/api_scope") ->
             return tok
 
     auth_b64 = base64.b64encode(f"{EBAY_CLIENT_ID}:{EBAY_CLIENT_SECRET}".encode()).decode()
-    data = {
-        "grant_type": "client_credentials",
-        "scope": scope,
-    }
+    data = {"grant_type": "client_credentials", "scope": scope}
     resp = requests.post(
         "https://api.ebay.com/identity/v1/oauth2/token",
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {auth_b64}"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {auth_b64}",
+        },
         timeout=30,
     )
     if resp.status_code != 200:
@@ -92,7 +93,8 @@ def affiliate_wrap(url: str) -> str:
     return f"{url}{sep}{tail}"
 
 def call_ebay_browse_search(q: str, price_min: Optional[float], price_max: Optional[float], limit: int = 12) -> List[Dict[str, Any]]:
-    token = get_ebay_oauth_token(scope="https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/buy.guest.order")
+    # FIX: use only base scope
+    token = get_ebay_oauth_token()
     endpoint = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
     params = {"q": q, "limit": str(limit), "sort": "price+asc"}
@@ -173,7 +175,6 @@ def parse_budget_range(raw: Any) -> Tuple[Optional[float], Optional[float]]:
         if lo is not None and hi is not None and lo > hi:
             lo, hi = hi, lo
         return lo, hi
-    # single value case like under 50 or 50
     nums = re.findall(r"\d+(\.\d+)?", s)
     if len(nums) == 1:
         val = to_float(nums[0])
@@ -208,9 +209,6 @@ def pick(payload: Dict[str, Any], *keys: str) -> Optional[Any]:
     return None
 
 def flatten_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Accept both flat and nested forms
-    """
     if "contact" in raw and isinstance(raw["contact"], dict):
         base = dict(raw["contact"])
         base.update({k: v for k, v in raw.items() if k != "contact"})
@@ -220,7 +218,6 @@ def flatten_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
 def build_query_from_form(raw_form: Dict[str, Any]) -> Dict[str, Any]:
     form = flatten_payload(raw_form)
 
-    # exact keys from your screenshots
     recipient = pick(form, "recipient_namenickname", "recipient_name", "recipient")
     relationship = pick(form, "relationship_to_you", "relationship")
     age_range = pick(form, "age_range")
@@ -235,7 +232,6 @@ def build_query_from_form(raw_form: Dict[str, Any]) -> Dict[str, Any]:
     budget_range_raw = pick(form, "budget_range", "budget")
     budget_min, budget_max = parse_budget_range(budget_range_raw)
 
-    # compose search query
     q = join_terms(
         relationship,
         occasion,
@@ -253,7 +249,6 @@ def build_query_from_form(raw_form: Dict[str, Any]) -> Dict[str, Any]:
     if location_city:
         soft_terms.append(str(location_city))
     if dislikes:
-        # add negative hints as plain words at the end
         soft_terms.extend([f"not {d}" for d in dislikes])
 
     if soft_terms:
@@ -312,12 +307,8 @@ def suggest(req: SuggestionRequest):
         logging.exception("suggest error")
         raise HTTPException(status_code=500, detail=str(e))
 
-# optional direct webhook style for GHL
 @app.post("/ghl/suggest", response_model=SuggestionResponse)
 async def ghl_suggest(request: Request):
-    """
-    Accepts a raw GHL webhook body
-    """
     body = await request.json()
     try:
         built = build_query_from_form(body)

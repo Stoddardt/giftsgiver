@@ -22,7 +22,7 @@ def root():
 # Allow requests from GHL or your web app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can restrict this later
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -40,10 +40,12 @@ def get_token() -> str:
         "Authorization": f"Basic {auth}",
         "Content-Type": "application/x-www-form-urlencoded",
     }
+    # ✅ IMPORTANT: correct scope for Browse API
     data = {
         "grant_type": "client_credentials",
-        "scope": "https://api.ebay.com/oauth/api_scope",
+        "scope": "https://api.ebay.com/oauth/api_scope/buy.browse"
     }
+
     r = requests.post("https://api.ebay.com/identity/v1/oauth2/token", headers=headers, data=data)
     r.raise_for_status()
     token_data = r.json()
@@ -70,6 +72,7 @@ def search(payload: SearchIn):
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        "Accept": "application/json"
     }
 
     params = {"q": payload.query, "limit": str(payload.limit)}
@@ -80,6 +83,10 @@ def search(payload: SearchIn):
     r = requests.get("https://api.ebay.com/buy/browse/v1/item_summary/search", headers=headers, params=params)
     r.raise_for_status()
     data = r.json()
+
+    # ✅ If eBay returns an error payload, show it to help debugging
+    if "errors" in data:
+        return {"items": [], "ebay_errors": data["errors"]}
 
     items = []
     for it in data.get("itemSummaries", []):
@@ -92,4 +99,4 @@ def search(payload: SearchIn):
             "url_affiliate": epn_link(url, payload.customId) if url else None,
         })
 
-    return {"items": items}
+    return {"count": len(items), "items": items}
